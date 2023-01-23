@@ -1,4 +1,7 @@
 # Taming Transformers for High-Resolution Image Synthesis
+
+> note: forked by tongxin.wen for easier use in hugging-face, for example, added the from_pretrained mixin for models
+
 ##### CVPR 2021 (Oral)
 ![teaser](assets/mountain.jpeg)
 
