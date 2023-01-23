@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "taming_transformers_hugf"
+name = "taming-transformers-hugf"
 version = "0.0.1"
 authors = [
   { name="tongxin.wen", email="mail@tongx.in" },
@@ -19,7 +19,7 @@ classifiers = [
 dependencies = [
   "numpy",
   "tqdm",
-  "pytorch>=1.7.0",
+  "torch>=1.7.0",
   "torchvision>=0.8.1",
   "numpy>=1.19.2",
   "albumentations>=0.4.3",
@@ -39,6 +39,12 @@ dependencies = [
 
 [project.urls]
 "Homepage" = "https://github.com//flybywind/taming-transformers"
-"Bug Tracker" = "https://github.com//flybywind/taming-transformers"
+"Bug Tracker" = "https://github.com/flybywind/taming-transformers"
 
-
+[tool.hatch.build]
+exclude = [
+  ".gitignore",
+  "data/*",
+  "assets/*",
+  "scripts/*"
+]
