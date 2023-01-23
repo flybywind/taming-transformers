@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "taming-transformers-hugf"
+name = "taming_transformers_hugf"
 version = "0.0.1"
 authors = [
   { name="tongxin.wen", email="mail@tongx.in" },
