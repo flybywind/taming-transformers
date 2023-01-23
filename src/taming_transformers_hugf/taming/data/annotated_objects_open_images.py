@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Dict, List, Any
 import warnings
 
-from taming.data.annotated_objects_dataset import AnnotatedObjectsDataset
-from taming.data.helper_types import Annotation, Category
+from taming_transformers_hugf.taming.data.annotated_objects_dataset import AnnotatedObjectsDataset
+from taming_transformers_hugf.taming.data.helper_types import Annotation, Category
 from tqdm import tqdm
 
 OPEN_IMAGES_STRUCTURE = {
