@@ -16,6 +16,8 @@ from taming_transformers_hugf.taming.data.utils import custom_collate
 
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)
+    if module.startswith("main.") or module.startswith('taming.'):
+        module = "taming_transformers_hugf." + module
     if reload:
         module_imp = importlib.import_module(module)
         importlib.reload(module_imp)

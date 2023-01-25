@@ -1,6 +1,12 @@
 import os, math
+from os import path as osp
+import glob
+from pathlib import Path
+from typing import Union
+import huggingface_hub as hf
 import torch
 import torch.nn.functional as F
+from omegaconf import OmegaConf
 import pytorch_lightning as pl
 
 from taming_transformers_hugf.main import instantiate_from_config
@@ -13,7 +19,7 @@ def disabled_train(self, mode=True):
     return self
 
 
-class Net2NetTransformer(pl.LightningModule):
+class Net2NetTransformer(pl.LightningModule, hf.ModelHubMixin):
     def __init__(self,
                  transformer_config,
                  first_stage_config,
@@ -77,6 +83,49 @@ class Net2NetTransformer(pl.LightningModule):
             model.train = disabled_train
             self.cond_stage_model = model
 
+    @classmethod
+    def _from_pretrained(
+        cls,
+        model_id,
+        revision,
+        cache_dir,
+        force_download,
+        proxies,
+        resume_download,
+        local_files_only,
+        token,
+        **model_kwargs,
+    ):
+        """Overwrite this method in subclass to define how to load your model from
+        pretrained"""
+        def reset_ckpt_params(cf, folder):
+            if not hasattr(cf, "keys"): 
+                return
+            for k in cf.keys():
+                if k == "ckpt_path":
+                    cf.ckpt_path = osp.join(folder, cf.ckpt_path)
+                else:
+                    reset_ckpt_params(cf.get(k), folder)
+        conf_dir = "configs"
+        if model_kwargs.get("config", None) is not None:
+            conf_dir = model_kwargs['config']['conf_dir']
+        repo_snap_local = hf.snapshot_download(repo_id=model_id, revision=revision, resume_download=resume_download, local_files_only=local_files_only, token=token, proxies=proxies, cache_dir=cache_dir)
+            
+        conf_dir = osp.join(repo_snap_local, conf_dir)
+        yaml_conf_list = glob.glob(f"{conf_dir}/*.yaml")
+        configs = [OmegaConf.load(cfg) for cfg in yaml_conf_list]
+        cli = OmegaConf.from_dotlist([])
+        config = OmegaConf.merge(*configs, cli)
+        reset_ckpt_params(config, repo_snap_local)
+        
+        return instantiate_from_config(config.model)
+
+    def _save_pretrained(self, save_directory: Union[str, Path]):
+        """
+        Overwrite this method in subclass to define how to save your model.
+        """
+        raise NotImplementedError
+        
     def forward(self, x, c):
         # one step to produce the logits
         _, z_indices = self.encode_to_z(x)

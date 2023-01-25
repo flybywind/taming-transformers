@@ -1,2 +1,6 @@
 dist/*
 **/__pycache__
+.vscode/settings.json
+.vscode/launch.json
+tests/cache_hugf/**
+.idea/**
