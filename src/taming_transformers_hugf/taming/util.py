@@ -1,6 +1,13 @@
 import os, hashlib
+from os import path as osp
+import glob
+from pathlib import Path
+from typing import Union
 import requests
 from tqdm import tqdm
+import huggingface_hub as hf
+
+from taming_transformers_hugf.main import instantiate_from_config
 
 URL_MAP = {
     "vgg_lpips": "https://heibox.uni-heidelberg.de/f/607503859c864bc1b30b/?dl=1"
@@ -140,6 +147,50 @@ def retrieve(
         return list_or_dict
     else:
         return list_or_dict, success
+
+class HugfMixin(hf.ModelHubMixin):
+    @classmethod
+    def _from_pretrained(
+        cls,
+        model_id,
+        revision,
+        cache_dir,
+        force_download,
+        proxies,
+        resume_download,
+        local_files_only,
+        token,
+        **model_kwargs,
+    ):
+        """Overwrite this method in subclass to define how to load your model from
+        pretrained"""
+        def reset_ckpt_params(cf, folder):
+            if not hasattr(cf, "keys"): 
+                return
+            for k in cf.keys():
+                if k == "ckpt_path":
+                    cf.ckpt_path = osp.join(folder, cf.ckpt_path)
+                else:
+                    reset_ckpt_params(cf.get(k), folder)
+        conf_dir = "configs"
+        if model_kwargs.get("config", None) is not None:
+            conf_dir = model_kwargs['config']['conf_dir']
+        repo_snap_local = hf.snapshot_download(repo_id=model_id, revision=revision, resume_download=resume_download, local_files_only=local_files_only, token=token, proxies=proxies, cache_dir=cache_dir)
+            
+        conf_dir = osp.join(repo_snap_local, conf_dir)
+        yaml_conf_list = glob.glob(f"{conf_dir}/*.yaml")
+        configs = [OmegaConf.load(cfg) for cfg in yaml_conf_list]
+        cli = OmegaConf.from_dotlist([])
+        config = OmegaConf.merge(*configs, cli)
+        reset_ckpt_params(config, repo_snap_local)
+        
+        return instantiate_from_config(config.model)
+
+    def _save_pretrained(self, save_directory: Union[str, Path]):
+        """
+        Overwrite this method in subclass to define how to save your model.
+        """
+        raise NotImplementedError
 
 
 if __name__ == "__main__":

@@ -1,16 +1,14 @@
 import os, math
-from os import path as osp
-import glob
-from pathlib import Path
-from typing import Union
-import huggingface_hub as hf
+from typing import Tuple
 import torch
 import torch.nn.functional as F
-from omegaconf import OmegaConf
 import pytorch_lightning as pl
+from PIL import Image
+import numpy as np
 
 from taming_transformers_hugf.main import instantiate_from_config
 from taming_transformers_hugf.taming.modules.util import SOSProvider
+from taming_transformers_hugf.taming.util import HugfMixin
 
 
 def disabled_train(self, mode=True):
@@ -19,7 +17,7 @@ def disabled_train(self, mode=True):
     return self
 
 
-class Net2NetTransformer(pl.LightningModule, hf.ModelHubMixin):
+class Net2NetTransformer(pl.LightningModule, HugfMixin):
     def __init__(self,
                  transformer_config,
                  first_stage_config,
@@ -82,49 +80,6 @@ class Net2NetTransformer(pl.LightningModule, hf.ModelHubMixin):
             model = model.eval()
             model.train = disabled_train
             self.cond_stage_model = model
-
-    @classmethod
-    def _from_pretrained(
-        cls,
-        model_id,
-        revision,
-        cache_dir,
-        force_download,
-        proxies,
-        resume_download,
-        local_files_only,
-        token,
-        **model_kwargs,
-    ):
-        """Overwrite this method in subclass to define how to load your model from
-        pretrained"""
-        def reset_ckpt_params(cf, folder):
-            if not hasattr(cf, "keys"): 
-                return
-            for k in cf.keys():
-                if k == "ckpt_path":
-                    cf.ckpt_path = osp.join(folder, cf.ckpt_path)
-                else:
-                    reset_ckpt_params(cf.get(k), folder)
-        conf_dir = "configs"
-        if model_kwargs.get("config", None) is not None:
-            conf_dir = model_kwargs['config']['conf_dir']
-        repo_snap_local = hf.snapshot_download(repo_id=model_id, revision=revision, resume_download=resume_download, local_files_only=local_files_only, token=token, proxies=proxies, cache_dir=cache_dir)
-            
-        conf_dir = osp.join(repo_snap_local, conf_dir)
-        yaml_conf_list = glob.glob(f"{conf_dir}/*.yaml")
-        configs = [OmegaConf.load(cfg) for cfg in yaml_conf_list]
-        cli = OmegaConf.from_dotlist([])
-        config = OmegaConf.merge(*configs, cli)
-        reset_ckpt_params(config, repo_snap_local)
-        
-        return instantiate_from_config(config.model)
-
-    def _save_pretrained(self, save_directory: Union[str, Path]):
-        """
-        Overwrite this method in subclass to define how to save your model.
-        """
-        raise NotImplementedError
         
     def forward(self, x, c):
         # one step to produce the logits
@@ -399,3 +354,106 @@ class Net2NetTransformer(pl.LightningModule, hf.ModelHubMixin):
         ]
         optimizer = torch.optim.AdamW(optim_groups, lr=self.learning_rate, betas=(0.9, 0.95))
         return optimizer
+
+class Imgplus2ImgTransformer(pl.LightningModule, HugfMixin):
+    '''
+    given two images, one act as key, one as context, synthesis another image that seems related with the two
+    '''
+    def __init__(self, transformer_config,
+                 encdecoder_stage_config,
+                 loss_config,
+                 key_stage_keys=["first", "second"],
+                 ckpt_path=None,
+                 ignore_state_dict_keys=[]
+                 ):
+        super().__init__()
+        self.first_key, self.second_key = key_stage_keys
+        # transformer is used to transform the codebook of first/second images to another codebook, which can then transformed to the 
+        # third image that looks like synthesised by the two in some way
+        self.transformer = instantiate_from_config(transformer_config)
+        # enc-decoder contains encoder to transform images to codebook, and decoder to transform the codes to image
+        # there are some candidates of such functionality, like vqgan model 
+        self.encdecoder = instantiate_from_config(encdecoder_stage_config)
+        self.loss = instantiate_from_config(loss_config)
+        if ckpt_path is not None:
+            self.init_from_ckpt(ckpt_path, ignore_keys=ignore_state_dict_keys)
+
+    def init_from_ckpt(self, path, ignore_keys=list()):
+        sd = torch.load(path, map_location="cpu")["state_dict"]
+        for k in sd.keys():
+            for ik in ignore_keys:
+                if k.startswith(ik):
+                    self.print("Deleting key {} from state_dict.".format(k))
+                    del sd[k]
+        self.load_state_dict(sd, strict=False)
+        print(f"Restored state dict from {path}")
+
+    @torch.no_grad()
+    def encode(self, x) -> Tuple[torch.Tensor, torch.Tensor]:
+        quant_z, _, info = self.encdecoder.encode(x)
+        indices = info[2].view(quant_z.shape[0], -1)
+        # indices = self.permuter(indices)
+        return quant_z, indices
+
+    @torch.no_grad()
+    def decode_to_img(self, index, zshape) -> Image.Image:
+        # index = self.permuter(index, reverse=True)
+        bhwc = (zshape[0],zshape[2],zshape[3],zshape[1])
+        quant_z = self.encdecoder.quantize.get_codebook_entry(
+            index.reshape(-1), shape=bhwc)
+        x = self.encdecoder.decode(quant_z)
+        img = torch.squeeze(x).permute(1,2,0).numpy()
+        minv, maxv = img.min(), img.max()
+        img = ((img - minv)/(maxv - minv) * 255).astype(np.uint8)
+        img = Image.fromarray(img)
+        return x
+
+    def forward(self, img1, img2, **kwargs) -> Image.Image:
+        code1, _ = self.encode(img1)
+        code2, _ = self.encode(img2)
+        code_prob = self.transformer(code1, code2)
+        code_sampled = torch.multinomial(code_prob, num_samples=kwargs.get("num_sample", 1))
+        return self.decode_to_img(code_sampled)
+
+    def get_input(self, key, batch):
+        x = batch[key]
+        if len(x.shape) == 3:
+            x = x[..., None]
+        if len(x.shape) == 4:
+            x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format)
+        return x
+
+    def log_with_phase(self, phase, loss_syn, loss_img1, loss_syn_dict, loss_img1_dict):
+        self.log(phase+"-syn/loss_syn", loss_syn, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log(phase+"-img/loss_img1", loss_img1, prog_bar=True, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(loss_syn_dict, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+        self.log_dict(loss_img1_dict, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+
+    def training_step(self, batch, batch_idx, optimizer_idx):
+        img1 = self.get_input(self.first_key, batch)
+        img2 = self.get_input(self.second_key, batch)
+        img1_hidden, _ = self.encode(img1) 
+        img2_hidden, _ = self.encode(img2)
+        syn_hidden = self.transformer.synthesis(img1_hidden, img2_hidden) # img1 + img2 == img_syn
+        img1_hidden_rec = self.transformer.synthesis(-img2_hidden, syn_hidden, -1) # img1_rec = img_syn - img2
+        syn_hidden_quant, loss_syn_emb, _ = self.encdecoder.quantize(syn_hidden)
+        img1_hidden_quant, loss_img1_emb, _ = self.encdecoder.quantize(img1_hidden_rec)
+        loss_img1_rec = torch.mean((img1_hidden - img1_hidden_quant)**2)
+        if optimizer_idx == 0:
+            # compute reconstruction loss in hidden space, not in image space
+            loss_syn_gan, loss_log_dict_syn = self.loss(loss_syn_emb, syn_hidden, syn_hidden_quant, optimizer_idx, self.global_step,
+                                            split="gen-syn")
+            loss_img1_gan, loss_log_dict_img1 = self.loss(loss_img1_emb, img1_hidden, img1_hidden_quant, optimizer_idx, self.global_step,
+                                            split="gen-img1")
+            self.log_with_phase("gen", loss_syn_gan, loss_img1_gan, loss_log_dict_syn, loss_log_dict_img1)
+        elif optimizer_idx == 1:
+            loss_syn_gan, loss_log_dict_syn = self.loss(loss_syn_emb, img1_hidden, syn_hidden_quant, optimizer_idx, self.global_step,
+                                            split="dis-syn")
+            loss_syn_gan, loss_log_dict_syn = self.loss(loss_img1_emb, img1_hidden, img1_hidden_quant, optimizer_idx, self.global_step,
+                                            split="dis-img1")
+            self.log_with_phase("dis", loss_syn_gan, loss_img1_gan, loss_log_dict_syn, loss_log_dict_img1)
+
+        total_loss = loss_syn_gan + loss_img1_gan + loss_img1_rec
+        return total_loss
+
+        
