@@ -4,3 +4,4 @@ dist/*
 .vscode/launch.json
 tests/cache_hugf/**
 .idea/**
+scripts/playground.ipynb

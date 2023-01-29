@@ -1,6 +1,6 @@
 import random
 import warnings
-from typing import Union
+from typing import Union, Tuple
 
 import torch
 from torch import Tensor
@@ -20,7 +20,7 @@ def convert_pil_to_tensor(image: Image) -> Tensor:
 
 
 class RandomCrop1dReturnCoordinates(RandomCrop):
-    def forward(self, img: Image) -> (BoundingBox, Image):
+    def forward(self, img: Image) -> Tuple[BoundingBox, Image]:
         """
         Additionally to cropping, returns the relative coordinates of the crop bounding box.
         Args:
@@ -69,7 +69,7 @@ class Random2dCropReturnCoordinates(torch.nn.Module):
         super().__init__()
         self.min_size = min_size
 
-    def forward(self, img: Image) -> (BoundingBox, Image):
+    def forward(self, img: Image) -> Tuple[BoundingBox, Image]:
         width, height = get_image_size(img)
         max_size = min(width, height)
         if max_size <= self.min_size:
@@ -97,7 +97,7 @@ class CenterCropReturnCoordinates(CenterCrop):
             y0 = 0.5 - h / 2
         return x0, y0, w, h
 
-    def forward(self, img: Union[Image, Tensor]) -> (BoundingBox, Union[Image, Tensor]):
+    def forward(self, img: Union[Image, Tensor]) -> Tuple[BoundingBox, Union[Image, Tensor]]:
         """
         Additionally to cropping, returns the relative coordinates of the crop bounding box.
         Args:
@@ -114,7 +114,7 @@ class CenterCropReturnCoordinates(CenterCrop):
 
 
 class RandomHorizontalFlipReturn(RandomHorizontalFlip):
-    def forward(self, img: Image) -> (bool, Image):
+    def forward(self, img: Image) -> Tuple[bool, Image]:
         """
         Additionally to flipping, returns a boolean whether it was flipped or not.
         Args:

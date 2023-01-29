@@ -7,6 +7,8 @@ from PIL import Image
 import numpy as np
 
 from taming_transformers_hugf.main import instantiate_from_config
+from taming_transformers_hugf.taming.modules.discriminator.model import NLayerDiscriminator, weights_init
+from taming_transformers_hugf.taming.modules.losses.vqperceptual import hinge_d_loss
 from taming_transformers_hugf.taming.modules.util import SOSProvider
 from taming_transformers_hugf.taming.util import HugfMixin
 
@@ -362,19 +364,33 @@ class Imgplus2ImgTransformer(pl.LightningModule, HugfMixin):
     def __init__(self, transformer_config,
                  encdecoder_stage_config,
                  loss_config,
-                 key_stage_keys=["first", "second"],
+                 key_stage_keys=["first", "second", "random"],
                  ckpt_path=None,
+                 tran_lr = 1e-3,
+                 disc_lr = 1e-3,
+                 n_critic = 5,
+                 quant_loss_weight=1.,
+                 syn_loss_weight=1.,
                  ignore_state_dict_keys=[]
                  ):
         super().__init__()
-        self.first_key, self.second_key = key_stage_keys
+        self.first_key, self.second_key, self.random_key = key_stage_keys
+        self.transformer_lr = tran_lr
+        self.discriminator_lr = disc_lr
+        self.n_critic = n_critic
         # transformer is used to transform the codebook of first/second images to another codebook, which can then transformed to the 
         # third image that looks like synthesised by the two in some way
         self.transformer = instantiate_from_config(transformer_config)
         # enc-decoder contains encoder to transform images to codebook, and decoder to transform the codes to image
         # there are some candidates of such functionality, like vqgan model 
         self.encdecoder = instantiate_from_config(encdecoder_stage_config)
-        self.loss = instantiate_from_config(loss_config)
+        self.quant_loss_weight = quant_loss_weight
+        self.syn_loss_weight = syn_loss_weight
+        self.discriminator = NLayerDiscriminator(input_nc=loss_config.disc_in_channels,
+                                                 n_layers=loss_config.disc_num_layers,
+                                                 use_actnorm=loss_config.use_actnorm,
+                                                 ndf=loss_config.disc_ndf
+                                                 ).apply(weights_init)
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_state_dict_keys)
 
@@ -423,37 +439,64 @@ class Imgplus2ImgTransformer(pl.LightningModule, HugfMixin):
             x = x.permute(0, 3, 1, 2).to(memory_format=torch.contiguous_format)
         return x
 
-    def log_with_phase(self, phase, loss_syn, loss_img1, loss_syn_dict, loss_img1_dict):
-        self.log(phase+"-syn/loss_syn", loss_syn, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-        self.log(phase+"-img/loss_img1", loss_img1, prog_bar=True, logger=True, on_step=True, on_epoch=True)
-        self.log_dict(loss_syn_dict, prog_bar=False, logger=True, on_step=True, on_epoch=True)
-        self.log_dict(loss_img1_dict, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+    def loss_generator(self, inputs, reconstructions, codebook_loss, log_prefix):
+        rec_loss = torch.abs(inputs.contiguous() - reconstructions.contiguous())
+         # generator update
+        logits_fake = self.discriminator(reconstructions.contiguous())
+        g_loss = -logits_fake
+
+        loss = rec_loss + self.quant_loss_weight * codebook_loss + g_loss
+
+        log = {"{}/total_loss".format(log_prefix): loss.clone().detach().mean(),
+               "{}/quant_loss".format(log_prefix): codebook_loss.detach().mean(),
+               "{}/rec_loss".format(log_prefix): rec_loss.detach().mean(),
+               "{}/gen_loss".format(log_prefix): g_loss.detach().mean(),
+               }
+        self.log_dict(log)
+        return loss.mean()
+    
+    def loss_discriminator(self, inputs, reconstructions, log_prefix):
+        # second pass for discriminator update
+        logits_real = self.discriminator(inputs.contiguous().detach())
+        logits_fake = self.discriminator(reconstructions.contiguous().detach())
+        d_loss = hinge_d_loss(logits_real, logits_fake)
+
+        log = {"{}/disc_loss".format(log_prefix): d_loss.clone().detach().mean(),
+                "{}/logits_real".format(log_prefix): logits_real.detach().mean(),
+                "{}/logits_fake".format(log_prefix): logits_fake.detach().mean()
+                }
+        self.log_dict(log)
+        return d_loss.mean()
 
     def training_step(self, batch, batch_idx, optimizer_idx):
         img1 = self.get_input(self.first_key, batch)
         img2 = self.get_input(self.second_key, batch)
         img1_hidden, _ = self.encode(img1) 
         img2_hidden, _ = self.encode(img2)
-        syn_hidden = self.transformer.synthesis(img1_hidden, img2_hidden) # img1 + img2 == img_syn
-        img1_hidden_rec = self.transformer.synthesis(-img2_hidden, syn_hidden, -1) # img1_rec = img_syn - img2
+        syn_hidden = self.transformer(img1_hidden, img2_hidden) # img1 + img2 == img_syn
+        img1_hidden_rec = self.transformer(-img2_hidden, syn_hidden) # img1_rec = img_syn - img2
         syn_hidden_quant, loss_syn_emb, _ = self.encdecoder.quantize(syn_hidden)
         img1_hidden_quant, loss_img1_emb, _ = self.encdecoder.quantize(img1_hidden_rec)
-        loss_img1_rec = torch.mean((img1_hidden - img1_hidden_quant)**2)
         if optimizer_idx == 0:
             # compute reconstruction loss in hidden space, not in image space
-            loss_syn_gan, loss_log_dict_syn = self.loss(loss_syn_emb, syn_hidden, syn_hidden_quant, optimizer_idx, self.global_step,
-                                            split="gen-syn")
-            loss_img1_gan, loss_log_dict_img1 = self.loss(loss_img1_emb, img1_hidden, img1_hidden_quant, optimizer_idx, self.global_step,
-                                            split="gen-img1")
-            self.log_with_phase("gen", loss_syn_gan, loss_img1_gan, loss_log_dict_syn, loss_log_dict_img1)
+            loss_syn_gan = self.loss_generator(syn_hidden, syn_hidden_quant, loss_syn_emb, log_prefix="gen-syn")
+            loss_img1_gan = self.loss_generator(img1_hidden, img1_hidden_quant, loss_img1_emb, log_prefix="gen-img1")
         elif optimizer_idx == 1:
-            loss_syn_gan, loss_log_dict_syn = self.loss(loss_syn_emb, img1_hidden, syn_hidden_quant, optimizer_idx, self.global_step,
-                                            split="dis-syn")
-            loss_syn_gan, loss_log_dict_syn = self.loss(loss_img1_emb, img1_hidden, img1_hidden_quant, optimizer_idx, self.global_step,
-                                            split="dis-img1")
-            self.log_with_phase("dis", loss_syn_gan, loss_img1_gan, loss_log_dict_syn, loss_log_dict_img1)
+            rand_img = self.get_input(self.random_key, batch)
+            rand_img_hidden, _ = self.encode(rand_img)
+            loss_syn_gan = self.loss_discriminator(rand_img_hidden, syn_hidden_quant, split="dis-syn")
+            loss_img1_gan = self.loss_discriminator(img1_hidden, img1_hidden_quant, split="dis-img1")
 
-        total_loss = loss_syn_gan + loss_img1_gan + loss_img1_rec
-        return total_loss
+        loss = self.syn_loss_weight * loss_syn_gan + loss_img1_gan
+        self.log("total_train/loss", loss.detach())
+        return loss
+
+    def configure_optimizers(self):
+        gen_opt = torch.optim.Adam(self.transformer.parameters(), lr=self.transformer_lr)
+        dis_opt = torch.optim.Adam(self.discriminator.parameters(), lr=self.discriminator_lr)
+        return (
+            {'optimizer': dis_opt, 'frequency': self.n_critic},
+            {'optimizer': gen_opt, 'frequency': 1}
+        )
 
         
