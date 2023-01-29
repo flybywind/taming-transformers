@@ -7,6 +7,7 @@ from PIL import Image
 import numpy as np
 
 from taming_transformers_hugf.main import instantiate_from_config
+from taming_transformers_hugf.taming.models.vqgan import VQModel
 from taming_transformers_hugf.taming.modules.discriminator.model import NLayerDiscriminator, weights_init
 from taming_transformers_hugf.taming.modules.losses.vqperceptual import hinge_d_loss
 from taming_transformers_hugf.taming.modules.util import SOSProvider
@@ -361,10 +362,12 @@ class Imgplus2ImgTransformer(pl.LightningModule, HugfMixin):
     '''
     given two images, one act as key, one as context, synthesis another image that seems related with the two
     '''
+    cache_dir:str = "./cache_hugf"
     def __init__(self, transformer_config,
-                 encdecoder_stage_config,
                  disc_config,
                  optim_config,
+                 encdecoder_model_id=None,
+                 encdecoder_stage_config=None,
                  key_stage_keys=["first", "second", "random"],
                  ckpt_path=None,
                  restore_from_ckpt=False,
@@ -377,8 +380,12 @@ class Imgplus2ImgTransformer(pl.LightningModule, HugfMixin):
         self.transformer = instantiate_from_config(transformer_config)
         # enc-decoder contains encoder to transform images to codebook, and decoder to transform the codes to image
         # there are some candidates of such functionality, like vqgan model 
-        self.encdecoder = instantiate_from_config(encdecoder_stage_config)
-        self.freeze_parameters()
+        if encdecoder_model_id and not restore_from_ckpt:
+            # if it is pretrained_model, hard coded as VQModel
+            self.encdecoder = VQModel.from_pretrained(encdecoder_model_id, cache_dir=self.cache_dir)
+        else:
+            assert encdecoder_stage_config is not None
+            self.encdecoder = instantiate_from_config(encdecoder_stage_config)
 
         self.transformer_lr = optim_config.tran_lr
         self.discriminator_lr = optim_config.disc_lr
@@ -390,8 +397,33 @@ class Imgplus2ImgTransformer(pl.LightningModule, HugfMixin):
                                                  use_actnorm=disc_config.use_actnorm,
                                                  ndf=disc_config.disc_ndf
                                                  ).apply(weights_init)
-        if ckpt_path is not None and restore_from_ckpt:
+        if ckpt_path and restore_from_ckpt:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_state_dict_keys)
+
+        self.freeze_parameters()
+        
+    @classmethod
+    def _from_pretrained(
+        cls,
+        model_id,
+        revision,
+        cache_dir,
+        force_download,
+        proxies,
+        resume_download,
+        local_files_only,
+        token,
+        **model_kwargs,
+    ):
+        HugfMixin._from_pretrained(model_id=model_id,
+        revision=revision,
+        force_download=force_download,
+        proxies=proxies,
+        resume_download=resume_download,
+        local_files_only=local_files_only,
+        token=token,
+        cache_dir=cls.cache_dir,
+        **model_kwargs)
 
     def freeze_parameters(self):
         for p in self.encdecoder.parameters():

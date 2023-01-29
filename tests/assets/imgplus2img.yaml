@@ -8,6 +8,7 @@ model:
     - "random"
     ckpt_path: checkpoints/last.ckpt
     restore_from_ckpt: False
+    encdecoder_model_id: "shanetx/2020-11-20T12-54-32_drin_transformer"
     transformer_config:
       target: taming.modules.transformer.imgsyn.ImgSynthesis
       params: 

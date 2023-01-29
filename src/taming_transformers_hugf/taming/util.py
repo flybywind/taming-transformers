@@ -2,6 +2,7 @@ import os, hashlib
 from os import path as osp
 import glob
 from omegaconf import OmegaConf
+import torch
 from pathlib import Path
 from typing import Union
 import requests
@@ -191,7 +192,7 @@ class HugfMixin(hf.ModelHubMixin):
         """
         Overwrite this method in subclass to define how to save your model.
         """
-        raise NotImplementedError
+        torch.save(self, Path(save_directory).joinpath("model.pt"))
 
 
 if __name__ == "__main__":

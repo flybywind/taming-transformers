@@ -8,8 +8,9 @@ from taming_transformers_hugf.taming.modules.diffusionmodules.model import Encod
 from taming_transformers_hugf.taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from taming_transformers_hugf.taming.modules.vqvae.quantize import GumbelQuantize
 from taming_transformers_hugf.taming.modules.vqvae.quantize import EMAVectorQuantizer
+from taming_transformers_hugf.taming.util import HugfMixin
 
-class VQModel(pl.LightningModule):
+class VQModel(pl.LightningModule, HugfMixin):
     def __init__(self,
                  ddconfig,
                  lossconfig,
@@ -40,6 +41,32 @@ class VQModel(pl.LightningModule):
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
         if monitor is not None:
             self.monitor = monitor
+
+    @classmethod
+    def _from_pretrained(
+        cls,
+        model_id,
+        revision,
+        cache_dir,
+        force_download,
+        proxies,
+        resume_download,
+        local_files_only,
+        token,
+        **model_kwargs,
+    ):
+        model = HugfMixin._from_pretrained(model_id, revision=revision, cache_dir=cache_dir, force_download=force_download, proxies=proxies, resume_download=resume_download, local_files_only=local_files_only, token=token, **model_kwargs)
+        if isinstance(model, VQModel):
+            return model
+        else:
+            find_model = False
+            for m in model.modules():
+                if isinstance(m, VQModel):
+                    model = m
+                    print(f"find wrapped target model: {cls}")
+                    return m
+            if not find_model:
+                raise RuntimeError(f"{model_id} doesn't contain {cls} module")
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
