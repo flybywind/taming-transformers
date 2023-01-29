@@ -1,0 +1,67 @@
+model:
+  base_learning_rate: 4.5e-06
+  target: taming.models.cond_transformer.Imgplus2ImgTransformer
+  params:
+    key_stage_keys: 
+    - "prime"
+    - "cond"
+    - "random"
+    ckpt_path: checkpoints/last.ckpt
+    restore_from_ckpt: False
+    transformer_config:
+      target: taming.modules.transformer.imgsyn.ImgSynthesis
+      params: 
+        q_dim: 1024
+        n_head: 4
+        n_blocks: 3
+        drop_att: 0.2
+        drop_res: 0.2
+    encdecoder_stage_config:
+      target: taming.models.vqgan.VQModel
+      params:
+        embed_dim: 256
+        n_embed: 1024
+        ddconfig:
+          double_z: false
+          z_channels: 256
+          resolution: 256
+          in_channels: 3
+          out_ch: 3
+          ch: 128
+          ch_mult:
+          - 1
+          - 1
+          - 2
+          - 2
+          - 4
+          num_res_blocks: 2
+          attn_resolutions:
+          - 16
+          dropout: 0.0
+        lossconfig:
+          target: taming.modules.losses.DummyLoss
+    disc_config:
+      disc_in_channels: 3
+      disc_num_layers: 5
+      use_actnorm: True
+      disc_ndf: 16
+    optim_config:
+      tran_lr: 1e-3
+      disc_lr: 1e-3
+      n_critic: 5
+      quant_loss_weight: 0.01
+      syn_loss_weight: 0.2
+
+data:
+  target: main.DataModuleFromConfig
+  params:
+    batch_size: 2
+    num_workers: 8
+    train:
+      target: taming.data.imagenet.RINTrainWithDepth
+      params:
+        size: 256
+    validation:
+      target: taming.data.imagenet.RINValidationWithDepth
+      params:
+        size: 256

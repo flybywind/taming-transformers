@@ -363,35 +363,34 @@ class Imgplus2ImgTransformer(pl.LightningModule, HugfMixin):
     '''
     def __init__(self, transformer_config,
                  encdecoder_stage_config,
-                 loss_config,
+                 disc_config,
+                 optim_config,
                  key_stage_keys=["first", "second", "random"],
                  ckpt_path=None,
-                 tran_lr = 1e-3,
-                 disc_lr = 1e-3,
-                 n_critic = 5,
-                 quant_loss_weight=1.,
-                 syn_loss_weight=1.,
+                 restore_from_ckpt=False,
                  ignore_state_dict_keys=[]
                  ):
         super().__init__()
         self.first_key, self.second_key, self.random_key = key_stage_keys
-        self.transformer_lr = tran_lr
-        self.discriminator_lr = disc_lr
-        self.n_critic = n_critic
         # transformer is used to transform the codebook of first/second images to another codebook, which can then transformed to the 
         # third image that looks like synthesised by the two in some way
         self.transformer = instantiate_from_config(transformer_config)
         # enc-decoder contains encoder to transform images to codebook, and decoder to transform the codes to image
         # there are some candidates of such functionality, like vqgan model 
         self.encdecoder = instantiate_from_config(encdecoder_stage_config)
-        self.quant_loss_weight = quant_loss_weight
-        self.syn_loss_weight = syn_loss_weight
-        self.discriminator = NLayerDiscriminator(input_nc=loss_config.disc_in_channels,
-                                                 n_layers=loss_config.disc_num_layers,
-                                                 use_actnorm=loss_config.use_actnorm,
-                                                 ndf=loss_config.disc_ndf
+        self.encdecoder.eval() # set enc-decoder in eval mode
+
+        self.transformer_lr = optim_config.tran_lr
+        self.discriminator_lr = optim_config.disc_lr
+        self.n_critic = optim_config.n_critic
+        self.quant_loss_weight = optim_config.quant_loss_weight
+        self.syn_loss_weight = optim_config.syn_loss_weight
+        self.discriminator = NLayerDiscriminator(input_nc=disc_config.disc_in_channels,
+                                                 n_layers=disc_config.disc_num_layers,
+                                                 use_actnorm=disc_config.use_actnorm,
+                                                 ndf=disc_config.disc_ndf
                                                  ).apply(weights_init)
-        if ckpt_path is not None:
+        if ckpt_path is not None and restore_from_ckpt:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_state_dict_keys)
 
     def init_from_ckpt(self, path, ignore_keys=list()):

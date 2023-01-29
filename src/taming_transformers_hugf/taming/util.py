@@ -1,6 +1,7 @@
 import os, hashlib
 from os import path as osp
 import glob
+from omegaconf import OmegaConf
 from pathlib import Path
 from typing import Union
 import requests
@@ -201,7 +202,6 @@ if __name__ == "__main__":
                    "cc2": 2,
                    }
               }
-    from omegaconf import OmegaConf
     config = OmegaConf.create(config)
     print(config)
     retrieve(config, "keya")
