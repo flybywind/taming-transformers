@@ -11,7 +11,7 @@ model:
     transformer_config:
       target: taming.modules.transformer.imgsyn.ImgSynthesis
       params: 
-        q_dim: 1024
+        q_dim: 256
         n_head: 4
         n_blocks: 3
         drop_att: 0.2

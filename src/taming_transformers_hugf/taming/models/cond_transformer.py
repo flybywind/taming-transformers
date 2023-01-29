@@ -378,7 +378,7 @@ class Imgplus2ImgTransformer(pl.LightningModule, HugfMixin):
         # enc-decoder contains encoder to transform images to codebook, and decoder to transform the codes to image
         # there are some candidates of such functionality, like vqgan model 
         self.encdecoder = instantiate_from_config(encdecoder_stage_config)
-        self.encdecoder.eval() # set enc-decoder in eval mode
+        self.freeze_parameters()
 
         self.transformer_lr = optim_config.tran_lr
         self.discriminator_lr = optim_config.disc_lr
@@ -393,6 +393,11 @@ class Imgplus2ImgTransformer(pl.LightningModule, HugfMixin):
         if ckpt_path is not None and restore_from_ckpt:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_state_dict_keys)
 
+    def freeze_parameters(self):
+        for p in self.encdecoder.parameters():
+            p.requires_grad = False
+        self.encdecoder.eval()
+    
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
         for k in sd.keys():
